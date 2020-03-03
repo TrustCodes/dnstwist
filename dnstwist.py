@@ -545,6 +545,9 @@ class DomainThread(threading.Thread):
 		threading.Thread.__init__(self)
 		self.jobs = queue
 		self.kill_received = False
+		
+		self.nameservers = ''
+		self.port = ''
 
 		self.ssdeep_orig = ''
 		self.domain_orig = ''
@@ -630,10 +633,10 @@ class DomainThread(threading.Thread):
 				resolv.lifetime = REQUEST_TIMEOUT_DNS
 				resolv.timeout = REQUEST_TIMEOUT_DNS
 
-				if args.nameservers:
-					resolv.nameservers = args.nameservers.split(",")
-				if args.port:
-					resolv.port = args.port
+				if self.nameservers:
+					resolv.nameservers = self.nameservers.split(",")
+				if self.port:
+					resolv.port = self.port
 
 				nxdomain = False
 				try:
