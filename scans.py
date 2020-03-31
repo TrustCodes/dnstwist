@@ -103,32 +103,76 @@ def clean_tmp(folder="tmp"):
         except Exception as e:
             logger.debug('Failed to delete %s. Reason: %s' % (file_path, e))
 
+class CrawlerThread(threading.Thread):
+    def __init__(self, queue):
+        threading.Thread.__init__(self)
+        self.jobs = queue
+        self.kill_received = False
+
+    def run(self):
+        while not self.kill_received:
+            try:
+                target_domain, codes, urls,contents = self.jobs.get(block=False)
+            except queue.Empty:
+                self.kill_received = True
+                return
+            logger.debug(f"crawling  {target_domain}")
+            user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.122 Safari/537.36'
+            headers = {'User-Agent': user_agent}
+            for url in urls:
+                whole_url = f"https://{target_domain}{url}"
+                try:
+                    request = requests.get(whole_url,headers=headers, timeout=1)
+                    logger.debug(f"getting {target_domain} {whole_url}")
+                    time.sleep(0.1)
+                    if request.status_code == 200:
+                        for content in contents:
+                            if content and content in request.content.decode('utf8').lower():
+                                cautions.append({"url": whole_url, "content": content,"domain":target_domain})
+                except Exception as ex:
+                    logger.debug(f'{target_domain} {whole_url} {ex}')
+            self.jobs.task_done()
+    def stop(self):
+        self.kill_received=True
 def crawer(host, caution_codes):
     START_TIME = datetime.now()
+    global threads, cautions
     count_urls=0
     cautions=[]
     urls=['/','/api/','/api/js/trust.codes.js','/trust.codes.js']
     contents = ["trust", "code", "authentic"] + host['customer'].split(' ')
+
+    exclude_domains = json.loads(open(f"./files/exclude_domains.json").read())
     if os.path.isfile(f"{TMP_FOLDER}/{FILES_PRE_REGISTED_DOMAIN}{host['host']}.json"):
         domains = [domain['domain-name'] for domain in json.loads(open(f"{TMP_FOLDER}/{FILES_PRE_REGISTED_DOMAIN}{host['host']}.json").read())]
+        domains = [domain for domain in domains if not domain in exclude_domains]
         codes = [code for code in caution_codes if host['host'] in code]
+
+        for code in codes:
+            urls.append(f"/{code.split('/')[-1]}/")
+        count_urls=len(urls)
+        jobs = queue.Queue()
+        threads = []
         for target_domain in domains:
             if not (target_domain == host['host']):
-                for code in codes:
-                    urls.append(f"/{code.split('/')[-1]}/")
-                for url in urls:
-                    count_urls=count_urls+1
-                    whole_url = f"https://{target_domain}{url}"
-                    try:
-                        request = requests.get(whole_url, timeout=1)
-                        logger.debug(f"getting {whole_url}")
-                        time.sleep(0.1)
-                        if request.status_code == 200:
-                            for content in contents:
-                                if content and content in request.content.decode('utf8').lower():
-                                    cautions.append({"url": whole_url, "content": content})
-                    except Exception as ex:
-                        logger.debug(f'{whole_url} {ex}')
+                jobs.put((target_domain,codes,urls,contents))
+                
+        for i in range(50):
+            worker =CrawlerThread(jobs)
+            worker.start()
+            threads.append(worker)
+
+        qperc = 0
+        while not jobs.empty():
+            qcurr = 100 * (len(domains) - jobs.qsize()) / len(domains)
+            if qcurr - 15 >= qperc:
+                qperc = qcurr
+                logger.debug('%u%%' % qperc)
+            time.sleep(1)
+        for worker in threads:
+            worker.stop()
+            worker.join()
+                
     return count_urls,cautions
 
 def notify(body_text):
@@ -136,7 +180,7 @@ def notify(body_text):
     # Time used zz minuted.
     # xx suspicious pages found
     SENDER = "notifications@trust.codes"
-    RECIPIENT = eval(os.getenv("RECIPIENTS",'["ken@trust.codes"]'))
+    RECIPIENT = eval(os.getenv("RECIPIENTS",'["support@trust.codes"]'))
     CHARSET = 'UTF-8'
     SUBJECT = "Hosts scaning result  {}".format(datetime.now().strftime('%Y-%m-%d'))
 
@@ -169,32 +213,41 @@ def notify(body_text):
 
 def main():
     START_TIME = datetime.now()
-    DEBUG_MAX_HOSTS = False or environ.get("DEBUG_MAX_HOSTS")
+    DEBUG_MAX_HOSTS = False or eval(environ.get("DEBUG_MAX_HOSTS","0"))
     DEBUG_SENT_EMAIL = False or environ.get("DEBUG_SENT_EMAIL")
+    DEBUG_EXCLUDE_TRUSTCODES = True and eval(environ.get("DEBUG_EXCLUDE_TRUSTCODES",'1'))
+    DEBUG_INGNORE_CAUTION_CODES = True and eval(environ.get("DEBUG_EXCLUDE_TRUSTCODES",'1'))
     count_hosts = 0
     count_domains = 0
     count_regis_domains = 0
     count_urls = 0
     hosts = json.loads(open(f"./files/hosts.json").read())
     extra_host = json.loads(open(f"./files/extra_hosts.json").read())
-    exclude_domains = []
-    hosts = [host for host in (hosts + extra_host) if not host['host'] in exclude_domains]
+    exclude_domains = json.loads(open(f"./files/exclude_domains.json").read())
+    logger.debug(f"Exclude list: {exclude_domains}")
+    hosts = [host for host in (hosts + extra_host)]
+    if DEBUG_EXCLUDE_TRUSTCODES:
+        hosts = [host for host in hosts if not (host['host'].endswith('.trust.codes') or host['host'].endswith('.green.codes'))]
     logger.debug(f"{len(hosts)} hosts found")
     cautions = []
     if not DEBUG_SENT_EMAIL:
         clean_tmp(TMP_FOLDER)
+        i = 0
         if DEBUG_MAX_HOSTS:
-            hosts = hosts[:1]
-        i=0
-        for host in hosts:
+            hosts=hosts[:DEBUG_MAX_HOSTS]
+        for host in hosts[:3]:
+            i=i+1
             logger.debug(f"fuzzing {i}/{len(hosts)} {host}")
             len_domains, len_regised = fuzzing(host)
             count_domains = count_domains + len_domains
             count_regis_domains = count_regis_domains + len_regised
             
         caution_codes = [code['url'] for code in json.loads(open(f"./files/caution_codes.json").read())]
+        if DEBUG_INGNORE_CAUTION_CODES:
+            caution_codes=[]
         i=0
         for host in hosts:
+            i=i+1
             logger.debug(f"crawling {i}/{len(hosts)} {host}")
             count_hosts = count_hosts + 1
             new_count_urls, new_cautions = crawer(host, caution_codes)
@@ -203,12 +256,24 @@ def main():
         logger.debug(cautions)
     logger.debug(f"Time use:{datetime.now()-START_TIME}")
     cautions_str = '\n'
+    domains=[]
     for caution in cautions:
-        cautions_str=cautions_str+"{caution['content']} found in {caution['url']}\n"
+        cautions_str=cautions_str+f"{caution['content']} found in {caution['url']}\n"
+        domains.append(caution['domain'])
+    domains = list(set(domains))
     mail_content = f"""{len(cautions) } suspicious pages found.{cautions_str}
             Scaned {count_urls} urls for {count_hosts} hosts({count_domains} fuzzing domains,{count_regis_domains} are registerd).
-            Time used: {datetime.now()-START_TIME}."""
-    notify(mail_content)
+            Time used: {datetime.now() - START_TIME}. 
+
+            Domains:
+            {json.dumps(domains)}
+            """
+
+    
+    try:
+        notify(mail_content)
+    except Exception as ex:
+        notify(mail_content)
 
 
 if __name__ == '__main__':
