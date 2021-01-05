@@ -3,7 +3,7 @@ services:
   scans:
     # command: python -v
     build: .
-    image: "tc-hosts-scans"
+    image: 263436898058.dkr.ecr.ap-southeast-2.amazonaws.com/tc-hosts-scans:latest
     volumes:
       - ${HOME}/.aws/credentials:/root/.aws/credentials
     environment:

@@ -3,6 +3,12 @@ Trustcodes
 
 The projetc is for scanning similar domains for Trustcodes customers.
 
+# how to deploy
+upgrade awscli to above version 1.9.15
+1. `make build`
+2. `make login`
+3. `make push`
+
 dnstwist
 ========
 
